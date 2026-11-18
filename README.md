@@ -1,6 +1,11 @@
-# DeX Monitor 0.8.0
+# DeX Monitor 0.9.0
 
 Floating performance strip for Samsung DeX (Galaxy S20 FE, Android 13). Source only.
+
+## Changes in 0.9.0
+- Overlay tries several ways to attach to the DeX display (window context, Presentation, display context, then phone screen) and records which one worked or the exact error.
+- DeX display selection no longer requires state ON; prefers a presentation display.
+- Diagnostics panel in the main screen (button 6 refreshes). Main screen is scrollable.
 
 ## Changes in 0.8.0 (vs 0.7.0)
 - Fixed a malformed `<service>` tag in AndroidManifest.xml that stopped the build.
