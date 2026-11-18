@@ -11,6 +11,7 @@ import android.provider.Settings
 import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 
@@ -25,7 +26,7 @@ class MainActivity : Activity() {
             setPadding(28, 28, 28, 28)
         }
         root.addView(TextView(this).apply {
-            text = "DeX Monitor 0.8.0\n\nThanh giám sát nổi dành cho Samsung DeX. Cấp quyền Overlay rồi bật thanh."
+            text = "DeX Monitor 0.9.0\n\nThanh giám sát nổi dành cho Samsung DeX. Cấp quyền Overlay rồi bật thanh."
             textSize = 19f
             setPadding(0, 0, 0, 18)
         })
@@ -103,7 +104,25 @@ class MainActivity : Activity() {
                 if (Settings.canDrawOverlays(this@MainActivity)) startForegroundService(i)
             }
         })
-        setContentView(root)
+        val diagTitle = TextView(this).apply {
+            text = "Chẩn đoán hiển thị (chụp ảnh phần này gửi lại nếu thanh không hiện trên màn hình DeX):"
+            textSize = 13f
+            setPadding(0, 24, 0, 6)
+        }
+        val diagText = TextView(this).apply {
+            textSize = 11f
+            setTextIsSelectable(true)
+            text = prefs.getString("diag", "Chưa có dữ liệu. Bấm nút 3, rồi cắm vào hub/DeX và bấm nút 6.")
+        }
+        root.addView(diagTitle)
+        root.addView(diagText)
+        root.addView(Button(this).apply {
+            text = "6. Làm mới chẩn đoán"
+            setOnClickListener {
+                diagText.text = prefs.getString("diag", "Chưa có dữ liệu.")
+            }
+        })
+        setContentView(ScrollView(this).apply { addView(root) })
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {

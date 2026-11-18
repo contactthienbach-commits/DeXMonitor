@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.Presentation
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -12,6 +13,7 @@ import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.hardware.display.DisplayManager
 import android.os.Build
@@ -19,6 +21,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
@@ -26,6 +29,8 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.min
@@ -57,6 +62,8 @@ class MonitorService : Service() {
     private var lastUsageRefresh = 0L
     private var overlayAttached = false
     private var overlayDisplayId = -1
+    private var presentation: Presentation? = null
+    private val diagLines = ArrayList<String>()
     private var displayListenerRegistered = false
 
     private val displayManager by lazy {
@@ -142,38 +149,146 @@ class MonitorService : Service() {
         return START_STICKY
     }
 
-    /** Prefer an active external display (DeX); otherwise fall back to the phone screen. */
-    private fun pickTargetDisplay(): Display? {
-        val active: List<Display> = try {
-            displayManager.displays.filter {
-                it.state == Display.STATE_ON && (it.flags and Display.FLAG_PRIVATE) == 0
-            }
-        } catch (_: Exception) {
-            emptyList()
-        }
-        return active.firstOrNull { it.displayId != Display.DEFAULT_DISPLAY } ?: active.firstOrNull()
+    private fun allDisplays(): List<Display> = try {
+        displayManager.displays.toList()
+    } catch (_: Exception) {
+        emptyList()
     }
 
-    /** Window context bound to the chosen display, so the overlay lands on the DeX monitor. */
-    private fun buildUiContext(display: Display): Context {
-        return try {
-            val displayContext = createDisplayContext(display)
-            if (Build.VERSION.SDK_INT >= 30) {
-                displayContext.createWindowContext(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null)
-            } else {
-                displayContext
-            }
-        } catch (_: Exception) {
-            this
+    /** Prefer an external (DeX) display; otherwise the phone screen. Displays that are OFF or private are ignored. */
+    private fun pickTargetDisplay(): Display? {
+        val usable = allDisplays().filter {
+            it.state != Display.STATE_OFF && (it.flags and Display.FLAG_PRIVATE) == 0
         }
+        val external = usable.filter { it.displayId != Display.DEFAULT_DISPLAY }
+        val preferred = external.firstOrNull { (it.flags and Display.FLAG_PRESENTATION) != 0 } ?: external.firstOrNull()
+        return preferred ?: usable.firstOrNull { it.displayId == Display.DEFAULT_DISPLAY }
+    }
+
+    private fun displaysReport(): String {
+        val all = allDisplays().joinToString(" | ") {
+            "id=${it.displayId} \"${it.name}\" state=${it.state} flags=0x${Integer.toHexString(it.flags)}"
+        }
+        val presentationIds = try {
+            displayManager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION).joinToString(",") { it.displayId.toString() }
+        } catch (_: Exception) {
+            "?"
+        }
+        return "$all  [presentation ids: ${if (presentationIds.isEmpty()) "none" else presentationIds}]"
+    }
+
+    private fun saveDiag() {
+        val text = diagLines.joinToString("\n")
+        prefs.edit().putString("diag", text).apply()
+        Log.i("DeXMonitor", text)
     }
 
     private fun createOverlay() {
         val target = pickTargetDisplay() ?: return
-        val ctx = buildUiContext(target)
+        diagLines.clear()
+        diagLines.add("Giờ: " + SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()) + "   Android " + Build.VERSION.SDK_INT)
+        diagLines.add("Các màn hình: " + displaysReport())
+        diagLines.add("Màn hình được chọn: id=${target.displayId} \"${target.name}\"")
+        val strategies = if (target.displayId != Display.DEFAULT_DISPLAY) {
+            listOf("window", "presentation", "display", "default")
+        } else {
+            listOf("default")
+        }
+        var ok = false
+        for (s in strategies) {
+            try {
+                attach(s, target)
+                diagLines.add("THÀNH CÔNG: cách '$s'")
+                ok = true
+                break
+            } catch (e: Exception) {
+                diagLines.add("LỖI cách '$s': ${e.javaClass.simpleName}: ${e.message}")
+                detachViews()
+            }
+        }
+        overlayAttached = ok
+        overlayDisplayId = if (ok) target.displayId else -1
+        if (!ok) diagLines.add("Không cách nào gắn được thanh lên màn hình.")
+        saveDiag()
+    }
+
+    private fun attach(strategy: String, target: Display) {
+        when (strategy) {
+            "presentation" -> attachPresentation(target)
+            "window" -> attachWithContext(buildWindowContext(target))
+            "display" -> attachWithContext(createDisplayContext(target))
+            else -> attachWithContext(this)
+        }
+    }
+
+    private fun buildWindowContext(display: Display): Context {
+        val displayContext = createDisplayContext(display)
+        return if (Build.VERSION.SDK_INT >= 30) {
+            displayContext.createWindowContext(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null)
+        } else {
+            displayContext
+        }
+    }
+
+    private fun initialX(): Int = prefs.getInt("pos_x", 0)
+
+    private fun initialY(): Int = if (prefs.contains("pos_y")) {
+        prefs.getInt("pos_y", 0)
+    } else {
+        dp(prefs.getInt("bottom_offset", 58).coerceIn(32, 120))
+    }
+
+    private fun attachWithContext(ctx: Context) {
         val windowManager = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         density = ctx.resources.displayMetrics.density
+        val root = buildPanel(ctx)
+        val screenWidth = ctx.resources.displayMetrics.widthPixels
+        val lp = WindowManager.LayoutParams(
+            min(dp(640), screenWidth - dp(32)),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        )
+        lp.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        lp.x = initialX()
+        lp.y = initialY()
+        windowManager.addView(root, lp)
+        wm = windowManager
+        panel = root
+        params = lp
+    }
 
+    /** Fallback: a Presentation window with overlay type, which can target a secondary display from a service. */
+    private fun attachPresentation(target: Display) {
+        val pres = Presentation(this, target)
+        val w = pres.window ?: throw IllegalStateException("Presentation window is null")
+        w.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
+        w.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        w.addFlags(
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        )
+        val ctx = pres.context
+        density = ctx.resources.displayMetrics.density
+        val root = buildPanel(ctx)
+        pres.setContentView(root)
+        val lp = w.attributes
+        lp.width = min(dp(640), ctx.resources.displayMetrics.widthPixels - dp(32))
+        lp.height = WindowManager.LayoutParams.WRAP_CONTENT
+        lp.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        lp.x = initialX()
+        lp.y = initialY()
+        w.attributes = lp
+        presentation = pres
+        panel = root
+        params = lp
+        pres.show()
+    }
+
+    private fun buildPanel(ctx: Context): LinearLayout {
         val opacity = prefs.getInt("opacity", 94).coerceIn(55, 100)
         val bg = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
@@ -233,34 +348,7 @@ class MonitorService : Service() {
         detailRow = details
 
         root.setOnTouchListener { _, event -> handleDrag(event) }
-
-        val screenWidth = ctx.resources.displayMetrics.widthPixels
-        val lp = WindowManager.LayoutParams(
-            min(dp(640), screenWidth - dp(32)),
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        )
-        lp.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-        lp.x = prefs.getInt("pos_x", 0)
-        lp.y = if (prefs.contains("pos_y")) {
-            prefs.getInt("pos_y", 0)
-        } else {
-            dp(prefs.getInt("bottom_offset", 58).coerceIn(32, 120))
-        }
-
-        try {
-            windowManager.addView(root, lp)
-            wm = windowManager
-            panel = root
-            params = lp
-            overlayAttached = true
-            overlayDisplayId = target.displayId
-        } catch (_: Exception) {
-            overlayAttached = false
-            // Keep the service alive; retry when a display changes.
-        }
+        return root
     }
 
     private fun addMetric(ctx: Context, parent: LinearLayout, label: String, initial: String, valueColor: Int): TextView {
@@ -287,17 +375,35 @@ class MonitorService : Service() {
         return valueView
     }
 
-    private fun removeOverlay() {
-        handler.removeCallbacks(ticker)
-        collapseTask?.let { handler.removeCallbacks(it) }
-        expanded = false
-        try { panel?.let { wm?.removeView(it) } } catch (_: Exception) { }
+    private fun detachViews() {
+        try { presentation?.dismiss() } catch (_: Exception) { }
+        try { if (presentation == null) panel?.let { wm?.removeView(it) } } catch (_: Exception) { }
+        presentation = null
         panel = null
         detailRow = null
         params = null
         wm = null
+    }
+
+    private fun removeOverlay() {
+        handler.removeCallbacks(ticker)
+        collapseTask?.let { handler.removeCallbacks(it) }
+        expanded = false
+        detachViews()
         overlayAttached = false
         overlayDisplayId = -1
+    }
+
+    private fun applyParams() {
+        val p = params ?: return
+        try {
+            val pres = presentation
+            if (pres != null) {
+                pres.window?.attributes = p
+            } else {
+                panel?.let { wm?.updateViewLayout(it, p) }
+            }
+        } catch (_: Exception) { }
     }
 
     private fun toggleExpanded() {
@@ -340,7 +446,7 @@ class MonitorService : Service() {
                 if (dragged) {
                     p.x = startX + dx.roundToInt()
                     p.y = startY - dy.roundToInt()
-                    try { panel?.let { wm?.updateViewLayout(it, p) } } catch (_: Exception) { }
+                    applyParams()
                 }
                 return true
             }
