@@ -17,6 +17,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".MonitorActivity"
+            android:exported="false"
+            android:label="DeX Monitor"
+            android:resizeableActivity="true"
+            android:taskAffinity=""
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboardHidden">
+            <layout
+                android:defaultWidth="700dp"
+                android:defaultHeight="380dp"
+                android:minWidth="360dp"
+                android:minHeight="120dp"
+                android:gravity="bottom|center_horizontal" />
+        </activity>
         <service
             android:name=".MonitorService"
             android:exported="false" />

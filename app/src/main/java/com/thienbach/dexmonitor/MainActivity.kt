@@ -26,7 +26,7 @@ class MainActivity : Activity() {
             setPadding(28, 28, 28, 28)
         }
         root.addView(TextView(this).apply {
-            text = "DeX Monitor 0.9.0\n\nThanh giám sát nổi dành cho Samsung DeX. Cấp quyền Overlay rồi bật thanh."
+            text = "DeX Monitor 0.9.1\n\nThanh giám sát nổi dành cho Samsung DeX. Cấp quyền Overlay rồi bật thanh."
             textSize = 19f
             setPadding(0, 0, 0, 18)
         })
@@ -102,6 +102,12 @@ class MainActivity : Activity() {
                 stopService(Intent(this@MainActivity, MonitorService::class.java))
                 val i = Intent(this@MainActivity, MonitorService::class.java)
                 if (Settings.canDrawOverlays(this@MainActivity)) startForegroundService(i)
+            }
+        })
+        root.addView(Button(this).apply {
+            text = "7. Mở cửa sổ giám sát (dùng trong DeX, nên chọn cách này)"
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, MonitorActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }
         })
         val diagTitle = TextView(this).apply {

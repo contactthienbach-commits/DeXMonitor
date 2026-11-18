@@ -11,8 +11,8 @@ android {
         applicationId = "com.thienbach.dexmonitor"
         minSdk = 26
         targetSdk = 33
-        versionCode = 9
-        versionName = "0.9.0"
+        versionCode = 10
+        versionName = "0.9.1"
     }
 
     compileOptions {
